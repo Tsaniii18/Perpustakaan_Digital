@@ -16,7 +16,7 @@ class LocationService {
   DateTime? _librariesCacheTime;
   DateTime? _cafesCacheTime;
   
-  static const String _apiKey = 'AIzaSyAOQbDgOEA3d0lOkwdMDbEXS5m2DkKIHDQ';
+  static const String _apiKey = 'AIzaSyAeNfe1EDwsUnHaaoTMBcv1oysltaJDR5U';
   static const int _cacheTtlMinutes = 60;
 
   Future<bool> requestPermission() async {
