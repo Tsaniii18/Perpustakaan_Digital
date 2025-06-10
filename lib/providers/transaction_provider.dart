@@ -44,14 +44,14 @@ class TransactionProvider with ChangeNotifier {
     notifyListeners();
     
     try {
-      // Buat transaksi
+      // Buat transaksi dengan waktu sekarang (WIB)
       BookTransaction transaction = BookTransaction(
         userId: userId,
         transactionType: TransactionType.coinPurchase,
         amount: amount,
         currency: currency,
         coins: coins,
-        timestamp: DateTime.now().add(Duration(hours: -7)),
+        timestamp: DateTime.now(), // PERBAIKAN: gunakan DateTime.now() langsung
       );
       
       // Simpan transaksi
@@ -76,14 +76,14 @@ class TransactionProvider with ChangeNotifier {
     notifyListeners();
     
     try {
-      // Buat transaksi
+      // Buat transaksi dengan waktu sekarang (WIB)
       BookTransaction transaction = BookTransaction(
         userId: userId,
         transactionType: TransactionType.bookPurchase,
         amount: 0, // Tidak ada biaya uang
         currency: 'COIN', // Mata uang adalah koin
         coins: coinPrice,
-        timestamp: DateTime.now().add(Duration(hours: -7)),
+        timestamp: DateTime.now(), // PERBAIKAN: gunakan DateTime.now() langsung
       );
       
       // Simpan transaksi

@@ -22,6 +22,7 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
   bool _isLoading = true;
   bool _isFavorite = false;
   bool _isPurchased = false;
+  bool _isValidatingPurchase = false; // Flag untuk validasi tambahan
   final ApiService _apiService = ApiService();
 
   @override
@@ -40,7 +41,7 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
     });
     
     try {
-      print('Loading details for book ID: $bookId');
+      print('🔍 Loading details for book ID: $bookId');
       
       // Parallel fetch untuk book detail dan status favorit/pembelian
       final bookFuture = _apiService.fetchBookDetail(bookId);
@@ -49,26 +50,30 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
       bool isPurchased = false;
       
       if (authProvider.currentUser != null) {
-        final favFuture = bookProvider.isFavorite(
+        // PERBAIKAN: Gunakan sequential loading untuk memastikan konsistensi
+        final book = await bookFuture;
+        
+        // Validasi ulang status premium
+        print('📚 Book loaded: ${book.title}');
+        print('💰 Is Premium: ${book.isPremium}');
+        print('🪙 Coin Price: ${book.coinPrice}');
+        
+        if (book.isPremium) {
+          // Double-check status pembelian untuk buku premium
+          await _validatePurchaseStatus(authProvider.currentUser!.id!, book.id);
+          isPurchased = await bookProvider.isPurchased(
+            authProvider.currentUser!.id!,
+            book.id,
+          );
+        }
+        
+        isFav = await bookProvider.isFavorite(
           authProvider.currentUser!.id!,
-          bookId,
+          book.id,
         );
         
-        final purchasedFuture = bookProvider.isPurchased(
-          authProvider.currentUser!.id!,
-          bookId,
-        );
-        
-        // Tunggu semua hasil
-        final results = await Future.wait([
-          bookFuture,
-          favFuture,
-          purchasedFuture,
-        ]);
-        
-        final book = results[0] as Book;
-        isFav = results[1] as bool;
-        isPurchased = results[2] as bool;
+        print('❤️ Is Favorite: $isFav');
+        print('🛒 Is Purchased: $isPurchased');
         
         if (mounted) {
           setState(() {
@@ -90,7 +95,7 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
         }
       }
     } catch (e) {
-      print('Error loading book details: $e');
+      print('❌ Error loading book details: $e');
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -103,6 +108,33 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
           ),
         );
       }
+    }
+  }
+  
+  // METODE BARU: Validasi status pembelian dengan double-check
+  Future<void> _validatePurchaseStatus(int userId, int bookId) async {
+    setState(() => _isValidatingPurchase = true);
+    
+    try {
+      final bookProvider = Provider.of<BookProvider>(context, listen: false);
+      
+      // Force refresh status pembelian dari database
+      await bookProvider.fetchPurchasedBooks(userId);
+      
+      // Cek ulang status pembelian
+      bool isPurchased = await bookProvider.isPurchased(userId, bookId);
+      
+      if (mounted) {
+        setState(() {
+          _isPurchased = isPurchased;
+          _isValidatingPurchase = false;
+        });
+      }
+      
+      print('✅ Purchase validation complete: $isPurchased');
+    } catch (e) {
+      print('❌ Error validating purchase: $e');
+      setState(() => _isValidatingPurchase = false);
     }
   }
 
@@ -141,6 +173,30 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
       return;
     }
     
+    // VALIDASI ULANG: Pastikan buku benar-benar premium dan belum dibeli
+    if (!_book!.isPremium) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Buku ini bukan buku premium'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    
+    // Double-check status pembelian
+    await _validatePurchaseStatus(authProvider.currentUser!.id!, _book!.id);
+    
+    if (_isPurchased) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Buku ini sudah dibeli sebelumnya'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      return;
+    }
+    
     // Cek apakah user memiliki cukup koin
     if (authProvider.currentUser!.coins < _book!.coinPrice) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -157,8 +213,16 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Konfirmasi Pembelian'),
-        content: Text(
-          'Apakah Anda yakin ingin membeli "${_book!.title}" dengan ${_book!.coinPrice} koin?',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Apakah Anda yakin ingin membeli "${_book!.title}"?'),
+            const SizedBox(height: 8),
+            Text('💰 Harga: ${_book!.coinPrice} koin'),
+            Text('🪙 Koin Anda: ${authProvider.currentUser!.coins} koin'),
+            Text('💳 Sisa: ${authProvider.currentUser!.coins - _book!.coinPrice} koin'),
+          ],
         ),
         actions: [
           TextButton(
@@ -177,7 +241,24 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
     
     // Proses pembelian
     try {
-      print('Processing book purchase');
+      print('💳 Processing book purchase');
+      
+      // PERBAIKAN: Lakukan validasi sekali lagi sebelum transaksi
+      bool isStillAvailable = !await bookProvider.isPurchased(
+        authProvider.currentUser!.id!,
+        _book!.id,
+      );
+      
+      if (!isStillAvailable) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Buku sudah dibeli oleh akun ini'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        setState(() => _isPurchased = true);
+        return;
+      }
       
       // Paralel operation untuk semua operasi pembelian
       await Future.wait([
@@ -208,17 +289,17 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Pembelian berhasil!'),
+            content: Text('🎉 Pembelian berhasil! Selamat membaca!'),
             backgroundColor: Colors.green,
           ),
         );
       }
     } catch (e) {
-      print('Error during book purchase: $e');
+      print('❌ Error during book purchase: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error: $e'),
+            content: Text('❌ Error: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -226,26 +307,72 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
     }
   }
 
+  // METODE PERBAIKAN: Validasi ketat sebelum membuka reader
   void _openBookReader() {
     if (_book == null) return;
     
-    // Pastikan untuk mengecek apakah buku premium dan belum dibeli
-    if (_book!.isPremium && !_isPurchased) {
-      print('Trying to open premium book that has not been purchased');
+    print('📖 Attempting to open book reader');
+    print('📚 Book: ${_book!.title}');
+    print('💰 Is Premium: ${_book!.isPremium}');
+    print('🛒 Is Purchased: $_isPurchased');
+    
+    // VALIDASI KETAT: Cek untuk buku premium
+    if (_book!.isPremium) {
+      if (!_isPurchased) {
+        print('🚫 BLOCKED: Premium book not purchased');
+        
+        // Tampilkan dialog konfirmasi pembelian
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('🔒 Buku Premium'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Ini adalah buku premium yang memerlukan pembelian.'),
+                const SizedBox(height: 8),
+                Text('💰 Harga: ${_book!.coinPrice} koin'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Tutup'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  _purchaseBook();
+                },
+                child: const Text('Beli Sekarang'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+    }
+    
+    // VALIDASI TAMBAHAN: Cek URL buku
+    if (_book!.textUrl == null || _book!.textUrl!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Anda harus membeli buku ini untuk membacanya'),
+          content: Text('❌ Konten buku tidak tersedia'),
           backgroundColor: Colors.red,
         ),
       );
       return;
     }
     
+    print('✅ Opening book reader');
+    
     Navigator.of(context).pushNamed(
       BookReaderScreen.routeName,
       arguments: {
         'title': _book!.title,
         'url': _book!.textUrl,
+        'isPremium': _book!.isPremium,
+        'isPurchased': _isPurchased,
       },
     );
   }
@@ -274,6 +401,25 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // TAMBAHAN: Status validasi
+                      if (_isValidatingPurchase)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(8),
+                          color: Colors.blue.shade50,
+                          child: const Row(
+                            children: [
+                              SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                              SizedBox(width: 8),
+                              Text('Memvalidasi status pembelian...'),
+                            ],
+                          ),
+                        ),
+                      
                       // Book Cover and Basic Info
                       Padding(
                         padding: const EdgeInsets.all(16.0),
@@ -341,27 +487,38 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
                                     const SizedBox(height: 8),
                                   ],
                                   if (_book!.isPremium) ...[
-                                    Row(
-                                      children: [
-                                        const Icon(
-                                          Icons.star,
-                                          color: Colors.amber,
-                                          size: 18,
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          'Premium: ${_book!.coinPrice} koin',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.amber.shade100,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(color: Colors.amber),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.star,
+                                            color: Colors.amber,
+                                            size: 18,
                                           ),
-                                        ),
-                                      ],
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'Premium: ${_book!.coinPrice} koin',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.amber,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                     const SizedBox(height: 8),
                                   ],
                                   if (_isPurchased)
                                     const Chip(
-                                      label: Text('Dibeli'),
+                                      avatar: Icon(Icons.check_circle, color: Colors.white, size: 18),
+                                      label: Text('Sudah Dibeli'),
                                       backgroundColor: Colors.green,
                                       labelStyle: TextStyle(color: Colors.white),
                                     ),
@@ -379,13 +536,13 @@ class _BookDetailScreenState extends State<BookDetailScreen> {
                           children: [
                             Expanded(
                               child: ElevatedButton.icon(
-                                icon: const Icon(Icons.book),
-                                label: const Text('Baca Buku'),
-                                onPressed: _book!.isPremium && !_isPurchased ? null : _openBookReader,
+                                icon: Icon(_book!.isPremium && !_isPurchased ? Icons.lock : Icons.book),
+                                label: Text(_book!.isPremium && !_isPurchased ? 'Buka Kunci' : 'Baca Buku'),
+                                onPressed: _openBookReader,
                                 style: ElevatedButton.styleFrom(
                                   padding: const EdgeInsets.symmetric(vertical: 12),
                                   backgroundColor: _book!.isPremium && !_isPurchased 
-                                      ? Colors.grey 
+                                      ? Colors.orange 
                                       : Theme.of(context).primaryColor,
                                 ),
                               ),

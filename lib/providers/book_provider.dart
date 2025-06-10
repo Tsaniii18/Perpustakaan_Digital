@@ -24,9 +24,12 @@ class BookProvider with ChangeNotifier {
   String? _selectedCategory;
   bool? _isPremiumFilter;
   
-  // Maps untuk tracking status favorit dan pembelian (cache in-memory)
-  Map<int, bool> _favoriteStatus = {};
-  Map<int, bool> _purchaseStatus = {};
+  // PERBAIKAN: Maps untuk tracking status dengan expiry time
+  Map<int, Map<String, dynamic>> _favoriteStatusCache = {};
+  Map<int, Map<String, dynamic>> _purchaseStatusCache = {};
+  
+  // Cache TTL dalam milidetik (5 menit)
+  static const int _statusCacheTtl = 300000;
   
   List<Book> get books => _filteredBooks;
   List<Favorite> get favorites => _favorites;
@@ -45,6 +48,37 @@ class BookProvider with ChangeNotifier {
   bool _hasLoadedInitialData = false;
   bool get hasLoadedInitialData => _hasLoadedInitialData;
   
+  // METODE BARU: Cek apakah cache masih valid
+  bool _isCacheValid(Map<String, dynamic> cacheEntry) {
+    if (cacheEntry.isEmpty) return false;
+    
+    int timestamp = cacheEntry['timestamp'] ?? 0;
+    int now = DateTime.now().millisecondsSinceEpoch;
+    
+    return (now - timestamp) < _statusCacheTtl;
+  }
+  
+  // METODE BARU: Simpan status ke cache dengan timestamp
+  void _setCacheStatus(Map<int, Map<String, dynamic>> cache, int key, bool status) {
+    cache[key] = {
+      'status': status,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+  }
+  
+  // METODE BARU: Ambil status dari cache
+  bool? _getCacheStatus(Map<int, Map<String, dynamic>> cache, int key) {
+    if (!cache.containsKey(key)) return null;
+    
+    Map<String, dynamic> cacheEntry = cache[key]!;
+    if (!_isCacheValid(cacheEntry)) {
+      cache.remove(key);
+      return null;
+    }
+    
+    return cacheEntry['status'] as bool?;
+  }
+
   Future<void> fetchBooks({bool refresh = false, bool showLoading = true}) async {
     if (refresh) {
       _currentPage = 1;
@@ -83,6 +117,9 @@ class BookProvider with ChangeNotifier {
       
       if (refresh) {
         _books = newBooks;
+        // PERBAIKAN: Clear cache saat refresh
+        _favoriteStatusCache.clear();
+        _purchaseStatusCache.clear();
       } else {
         _books.addAll(newBooks);
       }
@@ -131,18 +168,18 @@ class BookProvider with ChangeNotifier {
     notifyListeners();
   }
   
-  // Favorite Methods
+  // Favorite Methods - DIPERBAIKI
   Future<void> fetchFavorites(int userId) async {
     try {
-      print('Fetching favorites for user $userId');
+      print('📖 Fetching favorites for user $userId');
       List<Favorite> fetchedFavorites = await _dbHelper.getFavoritesByUserId(userId);
-      print('Fetched ${fetchedFavorites.length} favorites');
+      print('❤️ Fetched ${fetchedFavorites.length} favorites');
       _favorites = fetchedFavorites;
       
-      // Update the in-memory cache
-      _favoriteStatus.clear();
+      // PERBAIKAN: Update cache dengan timestamp
+      _favoriteStatusCache.clear();
       for (var fav in _favorites) {
-        _favoriteStatus[fav.bookId] = true;
+        _setCacheStatus(_favoriteStatusCache, fav.bookId, true);
       }
       
       notifyListeners();
@@ -157,16 +194,16 @@ class BookProvider with ChangeNotifier {
   
   Future<bool> toggleFavorite(int userId, Book book) async {
     try {
-      print('Toggling favorite for book ${book.id}');
+      print('💖 Toggling favorite for book ${book.id}');
       bool isFav = await isFavorite(userId, book.id);
       
       if (isFav) {
-        print('Removing from favorites');
+        print('🗑️ Removing from favorites');
         await _dbHelper.deleteFavorite(userId, book.id);
         _favorites.removeWhere((fav) => fav.bookId == book.id);
-        _favoriteStatus[book.id] = false;
+        _setCacheStatus(_favoriteStatusCache, book.id, false);
       } else {
-        print('Adding to favorites');
+        print('➕ Adding to favorites');
         Favorite newFavorite = Favorite(
           userId: userId,
           bookId: book.id,
@@ -177,7 +214,7 @@ class BookProvider with ChangeNotifier {
         
         await _dbHelper.insertFavorite(newFavorite);
         _favorites.add(newFavorite);
-        _favoriteStatus[book.id] = true;
+        _setCacheStatus(_favoriteStatusCache, book.id, true);
       }
       
       notifyListeners();
@@ -189,44 +226,51 @@ class BookProvider with ChangeNotifier {
     }
   }
   
+  // DIPERBAIKI: Cek favorit dengan cache yang lebih baik
   Future<bool> isFavorite(int userId, int bookId) async {
     try {
-      // Check in-memory cache first
-      if (_favoriteStatus.containsKey(bookId)) {
-        return _favoriteStatus[bookId]!;
+      // Check cache first
+      bool? cachedStatus = _getCacheStatus(_favoriteStatusCache, bookId);
+      if (cachedStatus != null) {
+        print('📋 Favorite status from cache for book $bookId: $cachedStatus');
+        return cachedStatus;
       }
       
-      // If not in cache, check database
+      // If not in cache or cache expired, check database
+      print('🔍 Checking favorite status in database for book $bookId');
       bool status = await _dbHelper.isFavorite(userId, bookId);
       
       // Update cache
-      _favoriteStatus[bookId] = status;
+      _setCacheStatus(_favoriteStatusCache, bookId, status);
       
+      print('💾 Cached favorite status for book $bookId: $status');
       return status;
     } catch (e) {
       _errorMessage = 'Error checking favorite status: $e';
+      print('❌ Error checking favorite status: $e');
       return false;
     }
   }
   
-  // Purchased Books Methods
+  // Purchased Books Methods - DIPERBAIKI
   Future<void> fetchPurchasedBooks(int userId) async {
     try {
-      print('Fetching purchased books for user $userId');
+      print('🛒 Fetching purchased books for user $userId');
       List<PurchasedBook> fetchedBooks = await _dbHelper.getPurchasedBooksByUserId(userId);
-      print('Fetched ${fetchedBooks.length} purchased books');
+      print('📚 Fetched ${fetchedBooks.length} purchased books');
       _purchasedBooks = fetchedBooks;
       
-      // Update the in-memory cache
-      _purchaseStatus.clear();
+      // PERBAIKAN: Update cache dengan timestamp
+      _purchaseStatusCache.clear();
       for (var book in _purchasedBooks) {
-        _purchaseStatus[book.bookId] = true;
+        _setCacheStatus(_purchaseStatusCache, book.bookId, true);
       }
       
+      print('💾 Updated purchase cache with ${_purchaseStatusCache.length} entries');
       notifyListeners();
     } catch (e) {
       _errorMessage = 'Error fetching purchased books: $e';
-      print(_errorMessage);
+      print('❌ Error fetching purchased books: $e');
       // Return empty list instead of throwing
       _purchasedBooks = [];
       notifyListeners();
@@ -235,11 +279,14 @@ class BookProvider with ChangeNotifier {
   
   Future<bool> purchaseBook(int userId, Book book) async {
     try {
-      print('Purchasing book ${book.id}');
-      bool isAlreadyPurchased = await isPurchased(userId, book.id);
+      print('💳 Processing purchase for book ${book.id}');
+      
+      // PERBAIKAN: Double-check dengan database sebelum purchase
+      bool isAlreadyPurchased = await _checkPurchaseInDatabase(userId, book.id);
       
       if (isAlreadyPurchased) {
-        print('Book already purchased');
+        print('✅ Book ${book.id} already purchased');
+        _setCacheStatus(_purchaseStatusCache, book.id, true);
         return true;
       }
       
@@ -250,42 +297,118 @@ class BookProvider with ChangeNotifier {
         purchaseDate: DateTime.now(),
       );
       
-      print('Inserting new purchase record');
+      print('💾 Inserting new purchase record');
       await _dbHelper.insertPurchasedBook(newPurchase);
       _purchasedBooks.add(newPurchase);
-      _purchaseStatus[book.id] = true;
       
+      // PERBAIKAN: Update cache dengan timestamp
+      _setCacheStatus(_purchaseStatusCache, book.id, true);
+      
+      print('✅ Purchase completed for book ${book.id}');
       notifyListeners();
       return true;
     } catch (e) {
       _errorMessage = 'Error purchasing book: $e';
-      print(_errorMessage);
+      print('❌ Error purchasing book: $e');
       return false;
     }
   }
   
+  // METODE BARU: Cek pembelian langsung di database
+  Future<bool> _checkPurchaseInDatabase(int userId, int bookId) async {
+    try {
+      bool status = await _dbHelper.isPurchased(userId, bookId);
+      print('🔍 Database check for book $bookId: $status');
+      return status;
+    } catch (e) {
+      print('❌ Error checking database: $e');
+      return false;
+    }
+  }
+  
+  // DIPERBAIKI: Cek pembelian dengan cache yang lebih baik
   Future<bool> isPurchased(int userId, int bookId) async {
     try {
-      // Check in-memory cache first
-      if (_purchaseStatus.containsKey(bookId)) {
-        return _purchaseStatus[bookId]!;
+      // Check cache first
+      bool? cachedStatus = _getCacheStatus(_purchaseStatusCache, bookId);
+      if (cachedStatus != null) {
+        print('📋 Purchase status from cache for book $bookId: $cachedStatus');
+        
+        // PERBAIKAN: Untuk buku premium, lakukan double-check sesekali
+        if (cachedStatus == false && ApiService.isPremiumBookStatic(bookId)) {
+          // 10% chance untuk double-check database untuk buku premium
+          if (DateTime.now().millisecond % 10 == 0) {
+            print('🔄 Double-checking premium book $bookId in database');
+            bool dbStatus = await _checkPurchaseInDatabase(userId, bookId);
+            if (dbStatus != cachedStatus) {
+              print('⚠️ Cache mismatch! Updating cache for book $bookId');
+              _setCacheStatus(_purchaseStatusCache, bookId, dbStatus);
+              return dbStatus;
+            }
+          }
+        }
+        
+        return cachedStatus;
       }
       
-      // If not in cache, check database
-      bool status = await _dbHelper.isPurchased(userId, bookId);
+      // If not in cache or cache expired, check database
+      print('🔍 Checking purchase status in database for book $bookId');
+      bool status = await _checkPurchaseInDatabase(userId, bookId);
       
       // Update cache
-      _purchaseStatus[bookId] = status;
+      _setCacheStatus(_purchaseStatusCache, bookId, status);
       
+      print('💾 Cached purchase status for book $bookId: $status');
       return status;
     } catch (e) {
       _errorMessage = 'Error checking purchase status: $e';
+      print('❌ Error checking purchase status: $e');
       return false;
     }
+  }
+  
+  // METODE BARU: Force refresh status untuk buku tertentu
+  Future<void> refreshBookStatus(int userId, int bookId) async {
+    print('🔄 Force refreshing status for book $bookId');
+    
+    // Remove from cache
+    _favoriteStatusCache.remove(bookId);
+    _purchaseStatusCache.remove(bookId);
+    
+    // Fetch fresh status
+    await Future.wait([
+      isFavorite(userId, bookId),
+      isPurchased(userId, bookId),
+    ]);
+    
+    print('✅ Status refreshed for book $bookId');
+  }
+  
+  // METODE BARU: Clear expired cache entries
+  void cleanupExpiredCache() {
+    int now = DateTime.now().millisecondsSinceEpoch;
+    
+    // Clean favorite cache
+    _favoriteStatusCache.removeWhere((key, value) {
+      int timestamp = value['timestamp'] ?? 0;
+      return (now - timestamp) >= _statusCacheTtl;
+    });
+    
+    // Clean purchase cache
+    _purchaseStatusCache.removeWhere((key, value) {
+      int timestamp = value['timestamp'] ?? 0;
+      return (now - timestamp) >= _statusCacheTtl;
+    });
+    
+    print('🧹 Cleaned up expired cache entries');
   }
   
   // Refresh data dengan invalidate cache
   Future<void> refreshData() async {
+    // PERBAIKAN: Clear semua cache
+    _favoriteStatusCache.clear();
+    _purchaseStatusCache.clear();
+    
     await _apiService.invalidateCache();
     fetchBooks(refresh: true);
   }
@@ -293,5 +416,21 @@ class BookProvider with ChangeNotifier {
   // Clear caches
   void clearBookDetailCache(int bookId) {
     _apiService.clearBookDetailCache(bookId);
+    
+    // PERBAIKAN: Clear status cache untuk buku ini juga
+    _favoriteStatusCache.remove(bookId);
+    _purchaseStatusCache.remove(bookId);
+  }
+  
+  // METODE BARU: Debug info
+  void printCacheInfo() {
+    print('🔍 Cache Info:');
+    print('📖 Favorite cache entries: ${_favoriteStatusCache.length}');
+    print('🛒 Purchase cache entries: ${_purchaseStatusCache.length}');
+    
+    cleanupExpiredCache();
+    
+    print('📖 Favorite cache after cleanup: ${_favoriteStatusCache.length}');
+    print('🛒 Purchase cache after cleanup: ${_purchaseStatusCache.length}');
   }
 }

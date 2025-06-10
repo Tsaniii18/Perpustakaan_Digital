@@ -6,17 +6,21 @@ import '../models/book.dart';
 class ApiService {
   final String baseUrl = 'https://gutendex.com/books';
   static const int TOTAL_BOOKS_LIMIT = 40; 
-  static const int PREMIUM_BOOKS_COUNT = 20;
+  static const int PREMIUM_BOOKS_COUNT = 30;
   
   // Memory cache untuk data dan kategori
   static Map<String, dynamic>? _cachedData;
   static List<String>? _cachedCategories;
+  
+  // PENTING: Set untuk menyimpan ID buku premium secara konsisten
+  static Set<int> _premiumBookIds = {};
   
   // Cache keys
   static const String BOOKS_CACHE_KEY = 'books_cache';
   static const String BOOKS_CACHE_TIMESTAMP_KEY = 'books_cache_timestamp';
   static const String CATEGORIES_CACHE_KEY = 'categories_cache';
   static const String DETAIL_CACHE_PREFIX = 'book_detail_';
+  static const String PREMIUM_IDS_CACHE_KEY = 'premium_book_ids';
   
   // Cache TTL (1 jam)
   static const int CACHE_TTL = 3600000;
@@ -24,7 +28,28 @@ class ApiService {
   // Map untuk menyimpan cache detail buku di memory
   static Map<int, Book> _bookDetailsCache = {};
   
-  // Fetch books dengan caching dan parameter
+  // METODE BARU: Cek apakah buku premium secara konsisten
+  static bool _isPremiumBook(int bookId) {
+    return _premiumBookIds.contains(bookId);
+  }
+  
+  // METODE BARU: Simpan ID premium ke cache
+  static Future<void> _savePremiumIds() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    List<String> idStrings = _premiumBookIds.map((id) => id.toString()).toList();
+    await prefs.setStringList(PREMIUM_IDS_CACHE_KEY, idStrings);
+  }
+  
+  // METODE BARU: Load ID premium dari cache
+  static Future<void> _loadPremiumIds() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    List<String>? idStrings = prefs.getStringList(PREMIUM_IDS_CACHE_KEY);
+    if (idStrings != null) {
+      _premiumBookIds = idStrings.map((id) => int.parse(id)).toSet();
+    }
+  }
+
+  // Fetch books dengan caching dan parameter - DIPERBAIKI
   Future<Map<String, dynamic>> fetchBooks({
     int page = 1,
     String? searchQuery,
@@ -32,11 +57,14 @@ class ApiService {
     bool? isPremium,
   }) async {
     try {
+      // Load premium IDs dari cache terlebih dahulu
+      await _loadPremiumIds();
+      
       // Cache key yang unik berdasarkan parameter
       String cacheKey = '$BOOKS_CACHE_KEY-$page-${searchQuery ?? ''}-${category ?? ''}-${isPremium?.toString() ?? ''}';
       
       // Cek cache di memory terlebih dahulu
-      if (_cachedData != null) {
+      if (_cachedData != null && page == 1 && searchQuery == null && category == null && isPremium == null) {
         return _cachedData!;
       }
       
@@ -77,20 +105,32 @@ class ApiService {
         final Map<String, dynamic> data = json.decode(response.body);
         List<dynamic> results = data['results'];
         
-        // Tentukan buku mana yang premium (20% dari setiap halaman)
-        int premiumCount = (results.length * 0.2).round();
+        // LOGIKA BARU: Tentukan buku premium secara konsisten
         for (int i = 0; i < results.length; i++) {
-          // Buku terakhir dalam hasil adalah premium
-          bool isPremiumBook = i >= (results.length - premiumCount);
+          int bookId = results[i]['id'];
           
-          // Tambahkan flag isPremium ke hasil
+          // Jika belum ada di set premium, tentukan berdasarkan algoritma konsisten
+          if (_premiumBookIds.isEmpty || !_premiumBookIds.contains(bookId)) {
+            // Gunakan algoritma yang konsisten: bookId % 5 == 0 ATAU posisi terakhir 20%
+            bool isPremiumBook = (bookId % 5 == 0) || (i >= (results.length * 0.8).round());
+            
+            if (isPremiumBook) {
+              _premiumBookIds.add(bookId);
+            }
+          }
+          
+          // Set status premium berdasarkan set yang konsisten
+          bool isPremiumBook = _isPremiumBook(bookId);
           results[i]['isPremium'] = isPremiumBook;
           
           // Tambahkan harga koin jika premium
           if (isPremiumBook) {
-            results[i]['coinPrice'] = ((results[i]['id'] % 3) + 1) * 10;
+            results[i]['coinPrice'] = ((bookId % 3) + 1) * 10;
           }
         }
+        
+        // Simpan premium IDs ke cache
+        await _savePremiumIds();
         
         // Filter buku premium jika parameter isPremium ada
         if (isPremium != null) {
@@ -103,8 +143,10 @@ class ApiService {
         // Cache data ke SharedPreferences
         _saveCache(cacheKey, data);
         
-        // Simpan di memory cache
-        _cachedData = Map.from(data);
+        // Simpan di memory cache hanya untuk halaman pertama tanpa filter
+        if (page == 1 && searchQuery == null && category == null && isPremium == null) {
+          _cachedData = Map.from(data);
+        }
         
         return data;
       } else {
@@ -116,8 +158,12 @@ class ApiService {
     }
   }
   
+  // DIPERBAIKI: Gunakan logika premium yang konsisten
   Future<Book> fetchBookDetail(int bookId) async {
     try {
+      // Load premium IDs dari cache terlebih dahulu
+      await _loadPremiumIds();
+      
       // Cek cache di memory terlebih dahulu
       if (_bookDetailsCache.containsKey(bookId)) {
         return _bookDetailsCache[bookId]!;
@@ -148,8 +194,18 @@ class ApiService {
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = json.decode(response.body);
         
-        // Tentukan apakah buku ini premium berdasarkan ID
-        bool isPremium = bookId % 5 == 0;
+        // GUNAKAN LOGIKA PREMIUM YANG KONSISTEN
+        bool isPremium = _isPremiumBook(bookId);
+        
+        // Jika belum ada di set, tentukan berdasarkan algoritma
+        if (_premiumBookIds.isEmpty || !_premiumBookIds.contains(bookId)) {
+          isPremium = bookId % 5 == 0;
+          if (isPremium) {
+            _premiumBookIds.add(bookId);
+            await _savePremiumIds();
+          }
+        }
+        
         data['isPremium'] = isPremium;
         
         // Tambahkan harga koin jika premium
@@ -175,6 +231,7 @@ class ApiService {
     }
   }
   
+  // Metode lain tetap sama...
   Future<List<String>> fetchCategories() async {
     // Gunakan cache jika sudah ada di memory
     if (_cachedCategories != null && _cachedCategories!.isNotEmpty) {
@@ -236,17 +293,24 @@ class ApiService {
     }
   }
   
-  // Invalidate cache untuk refresh data
+  // METODE BARU: Cek status premium dari luar
+  static bool isPremiumBookStatic(int bookId) {
+    return _isPremiumBook(bookId);
+  }
+  
+  // Invalidate cache untuk refresh data - DIPERBAIKI
   Future<void> invalidateCache() async {
     _cachedData = null;
     _bookDetailsCache.clear();
+    _premiumBookIds.clear(); // Clear premium IDs juga
     
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     
     // Clear cache data
     List<String> keys = prefs.getKeys().where((key) => 
       key.startsWith(BOOKS_CACHE_KEY) || 
-      key.startsWith(DETAIL_CACHE_PREFIX)
+      key.startsWith(DETAIL_CACHE_PREFIX) ||
+      key == PREMIUM_IDS_CACHE_KEY
     ).toList();
     
     for (String key in keys) {

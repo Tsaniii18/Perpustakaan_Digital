@@ -50,65 +50,43 @@ class BookTransaction {
     );
   }
 
-  // Mendapatkan timestamp dalam zona waktu yang berbeda
+  // Method yang disederhanakan untuk mendapatkan timestamp dalam zona waktu berbeda
   String getFormattedTimestamp(String timezone) {
-    DateTime localTime;
+    DateTime adjustedTime = timestamp;
     
-    // Menerapkan offset berdasarkan zona waktu
+    // Asumsi timestamp sudah dalam WIB (UTC+7)
+    // Kita adjust relatif terhadap WIB
     switch (timezone) {
-      case 'WIB': // UTC+7
-        localTime = DateTime.utc(timestamp.year, timestamp.month, timestamp.day, 
-          timestamp.hour, timestamp.minute, timestamp.second)
-          .add(const Duration(hours: 7));
+      case 'WIB': // UTC+7 - baseline
+        // Tidak perlu adjustment
         break;
-      case 'WITA': // UTC+8
-        localTime = DateTime.utc(timestamp.year, timestamp.month, timestamp.day, 
-          timestamp.hour, timestamp.minute, timestamp.second)
-          .add(const Duration(hours: 8));
+      case 'WITA': // UTC+8 - 1 jam lebih cepat dari WIB
+        adjustedTime = timestamp.add(const Duration(hours: 1));
         break;
-      case 'WIT': // UTC+9
-        localTime = DateTime.utc(timestamp.year, timestamp.month, timestamp.day, 
-          timestamp.hour, timestamp.minute, timestamp.second)
-          .add(const Duration(hours: 9));
+      case 'WIT': // UTC+9 - 2 jam lebih cepat dari WIB
+        adjustedTime = timestamp.add(const Duration(hours: 2));
         break;
-      case 'London': // UTC+0/1 (tergantung DST)
-        // Menghitung apakah saat ini DST (Daylight Saving Time) di London
-        bool isDST = _isLondonDST(timestamp);
-        localTime = DateTime.utc(timestamp.year, timestamp.month, timestamp.day, 
-          timestamp.hour, timestamp.minute, timestamp.second)
-          .add(Duration(hours: isDST ? 1 : 0));
+      case 'London': // UTC+0/+1 - 7/6 jam lebih lambat dari WIB
+        // Sederhana: anggap London UTC+0 (tanpa DST)
+        adjustedTime = timestamp.subtract(const Duration(hours: 7));
         break;
       default:
-        // Default to local time
-        localTime = timestamp.toLocal();
+        // Default tetap WIB
         break;
     }
     
-    return DateFormat('yyyy-MM-dd HH:mm:ss').format(localTime);
+    return DateFormat('yyyy-MM-dd HH:mm:ss').format(adjustedTime);
   }
 
-  // Fungsi untuk menentukan apakah tanggal saat ini DST di London
-  bool _isLondonDST(DateTime date) {
-    // DST di Eropa biasanya dimulai pada hari Minggu terakhir bulan Maret 
-    // dan berakhir pada hari Minggu terakhir bulan Oktober
-    int year = date.year;
-    
-    // Temukan hari Minggu terakhir bulan Maret
-    DateTime marchStart = DateTime(year, 3, 31);
-    while (marchStart.weekday != DateTime.sunday) {
-      marchStart = marchStart.subtract(const Duration(days: 1));
-    }
-    
-    // Temukan hari Minggu terakhir bulan Oktober
-    DateTime octoberEnd = DateTime(year, 10, 31);
-    while (octoberEnd.weekday != DateTime.sunday) {
-      octoberEnd = octoberEnd.subtract(const Duration(days: 1));
-    }
-    
-    // DST dimulai pada 01:00 GMT dan berakhir pada 01:00 GMT
-    DateTime dstStart = DateTime.utc(marchStart.year, marchStart.month, marchStart.day, 1, 0, 0);
-    DateTime dstEnd = DateTime.utc(octoberEnd.year, octoberEnd.month, octoberEnd.day, 1, 0, 0);
-    
-    return date.isAfter(dstStart) && date.isBefore(dstEnd);
+  // Helper method untuk mendapatkan tanggal saja (selalu dalam WIB)
+  String getFormattedDate() {
+    return DateFormat('dd MMM yyyy').format(timestamp);
+  }
+  
+  // Helper method untuk mendapatkan waktu saja
+  String getFormattedTime(String timezone) {
+    String fullTimestamp = getFormattedTimestamp(timezone);
+    List<String> parts = fullTimestamp.split(' ');
+    return parts.length > 1 ? parts[1] : fullTimestamp;
   }
 }
